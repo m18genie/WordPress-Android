@@ -248,7 +248,6 @@ public class LoginEmailPasswordFragment extends LoginBaseFormFragment<LoginListe
     }
 
     private void showError(String error) {
-
         mPasswordInput.setError(error);
     }
 
