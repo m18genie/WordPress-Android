@@ -40,10 +40,12 @@ import org.wordpress.android.util.helpers.MediaFile;
 import org.wordpress.android.util.helpers.MediaGallery;
 import org.wordpress.aztec.IHistoryListener;
 import org.wordpress.mobile.WPAndroidGlue.Media;
+import org.wordpress.mobile.WPAndroidGlue.MediaOption;
 import org.wordpress.mobile.WPAndroidGlue.WPAndroidGlueCode.OnAuthHeaderRequestedListener;
 import org.wordpress.mobile.WPAndroidGlue.WPAndroidGlueCode.OnEditorAutosaveListener;
 import org.wordpress.mobile.WPAndroidGlue.WPAndroidGlueCode.OnEditorMountListener;
 import org.wordpress.mobile.WPAndroidGlue.WPAndroidGlueCode.OnGetContentTimeout;
+import org.wordpress.mobile.WPAndroidGlue.WPAndroidGlueCode.OnImageFullscreenPreviewListener;
 import org.wordpress.mobile.WPAndroidGlue.WPAndroidGlueCode.OnMediaLibraryButtonListener;
 import org.wordpress.mobile.WPAndroidGlue.WPAndroidGlueCode.OnReattachQueryListener;
 
@@ -63,9 +65,12 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
     private static final String KEY_EDITOR_DID_MOUNT = "KEY_EDITOR_DID_MOUNT";
     private static final String ARG_IS_NEW_POST = "param_is_new_post";
     private static final String ARG_LOCALE_SLUG = "param_locale_slug";
+    private static final String ARG_SUPPORT_STOCK_PHOTOS = "param_support_stock_photos";
 
     private static final int CAPTURE_PHOTO_PERMISSION_REQUEST_CODE = 101;
     private static final int CAPTURE_VIDEO_PERMISSION_REQUEST_CODE = 102;
+
+    private static final String MEDIA_SOURCE_STOCK_MEDIA = "MEDIA_SOURCE_STOCK_MEDIA";
 
     private boolean mHtmlModeEnabled;
 
@@ -91,13 +96,15 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
     public static GutenbergEditorFragment newInstance(String title,
                                                       String content,
                                                       boolean isNewPost,
-                                                      String localeSlug) {
+                                                      String localeSlug,
+                                                      boolean supportStockPhotos) {
         GutenbergEditorFragment fragment = new GutenbergEditorFragment();
         Bundle args = new Bundle();
         args.putString(ARG_PARAM_TITLE, title);
         args.putString(ARG_PARAM_CONTENT, content);
         args.putBoolean(ARG_IS_NEW_POST, isNewPost);
         args.putString(ARG_LOCALE_SLUG, localeSlug);
+        args.putBoolean(ARG_SUPPORT_STOCK_PHOTOS, supportStockPhotos);
         fragment.setArguments(args);
         return fragment;
     }
@@ -263,16 +270,32 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
                         checkAndRequestCameraAndStoragePermissions(CAPTURE_PHOTO_PERMISSION_REQUEST_CODE);
                     }
 
-                    @Override public void onRetryUploadForMediaClicked(int mediaId) {
+                    @Override
+                    public void onRetryUploadForMediaClicked(int mediaId) {
                         showRetryMediaUploadDialog(mediaId);
                     }
 
-                    @Override public void onCancelUploadForMediaClicked(int mediaId) {
+                    @Override
+                    public void onCancelUploadForMediaClicked(int mediaId) {
                         showCancelMediaUploadDialog(mediaId);
                     }
 
-                    @Override public void onCancelUploadForMediaDueToDeletedBlock(int mediaId) {
+                    @Override
+                    public void onCancelUploadForMediaDueToDeletedBlock(int mediaId) {
                         cancelMediaUploadForDeletedBlock(mediaId);
+                    }
+
+                    @Override
+                    public ArrayList<MediaOption> onGetOtherMediaImageOptions() {
+                        ArrayList<MediaOption> otherMediaImageOptions = initOtherMediaImageOptions();
+                        return otherMediaImageOptions;
+                    }
+
+                    @Override
+                    public void onOtherMediaButtonClicked(String mediaSource, boolean allowMultipleSelection) {
+                        if (mediaSource.equals(MEDIA_SOURCE_STOCK_MEDIA)) {
+                            mEditorFragmentListener.onAddStockMediaClicked(allowMultipleSelection);
+                        }
                     }
                 },
                 new OnReattachQueryListener() {
@@ -308,6 +331,11 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
                     @Override public String onAuthHeaderRequested(String url) {
                         return mEditorFragmentListener.onAuthHeaderRequested(url);
                     }
+                },
+                new OnImageFullscreenPreviewListener() {
+                    @Override public void onImageFullscreenPreviewClicked(String mediaUrl) {
+                        mEditorImagePreviewListener.onImagePreviewRequested(mediaUrl);
+                    }
                 });
 
         // request dependency injection. Do this after setting min/max dimensions
@@ -337,6 +365,20 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
         }
 
         return view;
+    }
+
+    private ArrayList<MediaOption> initOtherMediaImageOptions() {
+        ArrayList<MediaOption> otherMediaOptions = new ArrayList<>();
+
+        boolean supportStockPhotos = getArguments().getBoolean(ARG_SUPPORT_STOCK_PHOTOS);
+        if (supportStockPhotos) {
+            String packageName = getActivity().getApplication().getPackageName();
+            int stockMediaResourceId = getResources().getIdentifier("photo_picker_stock_media", "string", packageName);
+
+            otherMediaOptions.add(new MediaOption(MEDIA_SOURCE_STOCK_MEDIA, getString(stockMediaResourceId)));
+        }
+
+        return otherMediaOptions;
     }
 
     @Override public void onResume() {
@@ -494,6 +536,12 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
             mEditorDragAndDropListener = (EditorDragAndDropListener) activity;
         } catch (ClassCastException e) {
             throw new ClassCastException(activity.toString() + " must implement EditorDragAndDropListener");
+        }
+
+        try {
+            mEditorImagePreviewListener = (EditorImagePreviewListener) activity;
+        } catch (ClassCastException e) {
+            throw new ClassCastException(activity.toString() + " must implement EditorImagePreviewListener");
         }
     }
 
@@ -685,18 +733,15 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
             return;
         }
 
-        if (URLUtil.isNetworkUrl(mediaUrl)) {
-            getGutenbergContainerFragment().appendMediaFile(
-                    Integer.valueOf(mediaFile.getMediaId()),
-                    mediaUrl,
-                    mediaFile.isVideo());
-        } else {
-            getGutenbergContainerFragment().appendUploadMediaFile(
-                    mediaFile.getId(),
-                    "file://" + mediaUrl,
-                    mediaFile.isVideo());
+        boolean isNetworkUrl = URLUtil.isNetworkUrl(mediaUrl);
+        if (!isNetworkUrl) {
             mUploadingMediaProgressMax.put(String.valueOf(mediaFile.getId()), 0f);
         }
+
+        getGutenbergContainerFragment().appendUploadMediaFile(
+                isNetworkUrl ? Integer.valueOf(mediaFile.getMediaId()) : mediaFile.getId(),
+                isNetworkUrl ? mediaUrl : "file://" + mediaUrl,
+                mediaFile.isVideo());
     }
 
     @Override
@@ -718,32 +763,26 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
             mediaUrl = (String) mediaUrls[0];
         }
 
-        if (URLUtil.isNetworkUrl(mediaUrl)) {
-            for (Map.Entry<String, MediaFile> mediaEntry : mediaList.entrySet()) {
-                rnMediaList.add(
-                        new Media(
-                                Integer.valueOf(mediaEntry.getValue().getMediaId()),
-                                mediaEntry.getKey(),
-                                mediaEntry.getValue().getMimeType()
-                        )
-                );
-            }
-            getGutenbergContainerFragment().appendMediaFiles(rnMediaList);
-        } else {
-            for (Map.Entry<String, MediaFile> mediaEntry : mediaList.entrySet()) {
-                rnMediaList.add(
-                        new Media(
-                                mediaEntry.getValue().getId(),
-                                "file://" + mediaEntry.getKey(),
-                                mediaEntry.getValue().getMimeType()
-                        )
-                );
-            }
-            getGutenbergContainerFragment().appendUploadMediaFiles(rnMediaList);
+        boolean isNetworkUrl = URLUtil.isNetworkUrl(mediaUrl);
+        if (!isNetworkUrl) {
             for (Media media : rnMediaList) {
                 mUploadingMediaProgressMax.put(String.valueOf(media.getId()), 0f);
             }
         }
+
+        for (Map.Entry<String, MediaFile> mediaEntry : mediaList.entrySet()) {
+            rnMediaList.add(
+                    new Media(
+                            isNetworkUrl
+                                    ? Integer.valueOf(mediaEntry.getValue().getMediaId())
+                                    : mediaEntry.getValue().getId(),
+                            isNetworkUrl ? mediaEntry.getKey() : "file://" + mediaEntry.getKey(),
+                            mediaEntry.getValue().getMimeType()
+                    )
+            );
+        }
+
+        getGutenbergContainerFragment().appendUploadMediaFiles(rnMediaList);
     }
 
     @Override
@@ -770,14 +809,6 @@ public class GutenbergEditorFragment extends EditorFragmentAbstract implements
 
     @Override
     public void removeMedia(String mediaId) {
-    }
-
-    @Override
-    public void setTitlePlaceholder(CharSequence placeholderText) {
-    }
-
-    @Override
-    public void setContentPlaceholder(CharSequence placeholderText) {
     }
 
     // Getting the content from the HTML editor can take time and the UI seems to be unresponsive.

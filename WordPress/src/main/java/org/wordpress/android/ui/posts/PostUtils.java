@@ -20,6 +20,7 @@ import org.wordpress.android.fluxc.model.post.PostLocation;
 import org.wordpress.android.fluxc.model.post.PostStatus;
 import org.wordpress.android.fluxc.store.PostStore;
 import org.wordpress.android.ui.posts.RemotePreviewLogicHelper.RemotePreviewType;
+import org.wordpress.android.ui.prefs.AppPrefs;
 import org.wordpress.android.ui.uploads.PostEvents;
 import org.wordpress.android.ui.uploads.UploadUtils;
 import org.wordpress.android.ui.utils.UiString.UiStringText;
@@ -42,7 +43,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -53,8 +53,9 @@ public class PostUtils {
 
     private static final String GUTENBERG_BLOCK_START = "<!-- wp:";
     private static final int SRC_ATTRIBUTE_LENGTH_PLUS_ONE = 5;
-    private static final String GB_IMG_BLOCK_HEADER_PLACEHOLDER = "<!-- wp:image {\"id\":%s} -->";
+    private static final String GB_IMG_BLOCK_HEADER_PLACEHOLDER = "<!-- wp:image {\"id\":%s";
     private static final String GB_IMG_BLOCK_CLASS_PLACEHOLDER = "class=\"wp-image-%s\"";
+    private static final String GB_MEDIA_TEXT_BLOCK_HEADER_PLACEHOLDER = "<!-- wp:media-text {\"mediaId\":%s";
 
     public static Map<String, Object> addPostTypeToAnalyticsProperties(PostModel post, Map<String, Object> properties) {
         if (properties == null) {
@@ -186,6 +187,8 @@ public class PostUtils {
         if (!post.isLocalDraft()) {
             properties.put("post_id", post.getRemotePostId());
         }
+        properties.put(AnalyticsUtils.EDITOR_HAS_HW_ACCELERATION_DISABLED_KEY, AppPrefs.isPostWithHWAccelerationOff(
+                site.getId(), post.getId()) ? "1" : "0");
         properties.put(AnalyticsUtils.HAS_GUTENBERG_BLOCKS_KEY,
                 PostUtils.contentContainsGutenbergBlocks(post.getContent()));
         AnalyticsUtils.trackWithSiteDetails(AnalyticsTracker.Stat.EDITOR_OPENED, site,
@@ -413,6 +416,11 @@ public class PostUtils {
                 String newImgBlockHeader = String.format(GB_IMG_BLOCK_HEADER_PLACEHOLDER, mediaFile.getMediaId());
                 postContent = postContent.replace(oldImgBlockHeader, newImgBlockHeader);
 
+                String oldMediaTextBlockHeader = String.format(GB_MEDIA_TEXT_BLOCK_HEADER_PLACEHOLDER, localMediaId);
+                String newMediaTextBlockHeader = String.format(GB_MEDIA_TEXT_BLOCK_HEADER_PLACEHOLDER,
+                        mediaFile.getMediaId());
+                postContent = postContent.replace(oldMediaTextBlockHeader, newMediaTextBlockHeader);
+
                 // replace class wp-image-id with serverMediaId, and url_holder with remoteUrl
                 String oldImgClass = String.format(GB_IMG_BLOCK_CLASS_PLACEHOLDER, localMediaId);
                 String newImgClass = String.format(GB_IMG_BLOCK_CLASS_PLACEHOLDER, mediaFile.getMediaId());
@@ -470,10 +478,12 @@ public class PostUtils {
     public static String getConflictedPostCustomStringForDialog(PostModel post) {
         Context context = WordPress.getContext();
         String firstPart = context.getString(R.string.dialog_confirm_load_remote_post_body);
+        String lastModified =
+                TextUtils.isEmpty(post.getDateLocallyChanged()) ? post.getLastModified() : post.getDateLocallyChanged();
         String secondPart =
                 String.format(context.getString(R.string.dialog_confirm_load_remote_post_body_2),
                         getFormattedDateForLastModified(
-                                context, DateTimeUtils.timestampFromIso8601Millis(post.getLastModified())),
+                                context, DateTimeUtils.timestampFromIso8601Millis(lastModified)),
                         getFormattedDateForLastModified(
                                 context, DateTimeUtils.timestampFromIso8601Millis(post.getRemoteLastModified())));
         return firstPart + secondPart;
@@ -507,10 +517,8 @@ public class PostUtils {
                 DateFormat.SHORT,
                 LocaleManager.getSafeLocale(context));
 
-
-        // The timezone on the website is at GMT
-        dateFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
-        timeFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
+        dateFormat.setTimeZone(Calendar.getInstance().getTimeZone());
+        timeFormat.setTimeZone(Calendar.getInstance().getTimeZone());
 
         return dateFormat.format(date) + " @ " + timeFormat.format(date);
     }
